@@ -1,68 +1,94 @@
 package main
 
 import (
+	"crypto/tls"
+	"errors"
+	"fmt"
 	"net"
-	"strconv"
+	"strings"
 )
 
-func server(startport uint, endport uint) {
-	var i uint
-	for i = startport; i < endport+1; i++ {
-		go handleTcp(i)
-		go handleUdp(i)
-	}
-	select {}
+type serverConfig struct {
+	portRangeStart   uint16
+	portRangeEnd     uint16
+	ip               net.IP
+	networks         []network
+	datagramSize     uint
+	ignoreBindErrors bool
+	tlsCert          *tls.Certificate
 }
 
-func handleUdp(port uint) error {
-	listener, err := net.ListenUDP(UDP, &net.UDPAddr{IP: []byte{0, 0, 0, 0}, Port: int(port), Zone: ""})
-	if err != nil {
-		log.Error("Failed to bind to TCP port", port, err)
-		return err
-	}
-	buf := make([]byte, len(PING))
-	for {
-		_, addr, err := listener.ReadFromUDP(buf)
-		if err != nil {
-			log.Warning("Could not read from UDP port", port, err)
-			continue
-		}
-		if string(buf) != string(PING) {
-			log.Warning("Received unexpected data. Not responding.")
-			continue
-		}
-		_, err = listener.WriteToUDP(PONG, addr)
-		if err != nil {
-			log.Warning("Could not write to UDP port", port, err)
-			continue
-		}
+var defaultServerConfig = serverConfig{
+	portRangeStart:   1,
+	portRangeEnd:     65535,
+	ip:               net.ParseIP("0.0.0.0"),
+	networks:         []network{tcp4},
+	ignoreBindErrors: false,
+	datagramSize:     4,
+	tlsCert:          nil,
+}
+
+type serverX interface {
+	start() error
+	stop()
+}
+
+type serverImpl struct {
+	config    *serverConfig
+	conns     []networkConn
+	isStarted bool
+}
+
+func newServer(config *serverConfig) serverX {
+	return &serverImpl{
+		config: config,
+		conns:  make([]networkConn, 0, 16),
 	}
 }
 
-func handleTcp(port uint) error {
-	listener, err := net.Listen(TCP, ":"+strconv.Itoa(int(port)))
-	if err != nil {
-		log.Error("Failed to bind to TCP port", port, err)
-		return err
+var pingPong onNewConnCallback = func(network network, ip net.IP, port int, data []byte) []byte {
+	if string(data) != string(PING) {
+		log.Debug("Data received is not PING.")
+		return nil
 	}
-	buf := make([]byte, len(PING))
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Warning("Failed to accept an incoming TCP connection", err)
-			continue
+	log.Infof("Received %s PING from %s at port %d", strings.ToUpper(string(network)), ip.String(), port)
+	return PONG
+}
+
+func (s *serverImpl) start() error {
+	if s.isStarted {
+		return errors.New("server has been started. create a new instance if needed")
+	}
+	if s.config.portRangeEnd < s.config.portRangeStart {
+		return errors.New(fmt.Sprintf("Port range is invalid."))
+	}
+	if s.config.networks == nil || len(s.config.networks) == 0 {
+		return errors.New("no network types provided")
+	}
+	for port := s.config.portRangeStart; port <= s.config.portRangeEnd; port++ {
+		for _, networkType := range s.config.networks {
+			conn := newConn(pingPong, s.config.datagramSize)
+			err := conn.bind(networkType, s.config.ip, int(port))
+			if err != nil {
+				log.Warningf("Could not bind to %s on port %d", networkType, port)
+				if s.config.ignoreBindErrors {
+					continue
+				} else {
+					return errors.New("could not bind to required port")
+				}
+			}
+			s.isStarted = true
+			s.conns = append(s.conns)
 		}
-		_, err = conn.Read(buf)
-		if string(buf) != string(PING) {
-			log.Warning("Received unexpected data. Not responding.")
-		}
-		_, err = conn.Write(PONG)
-		if err != nil {
-			log.Warning("Failed to write to an incoming TCP connection", err)
-		}
-		err = conn.Close()
-		if err != nil {
-			log.Warning("Failed to close an incoming TCP connection", err)
-		}
+	}
+	if len(s.conns) == 0 {
+		return errors.New("could not bind to any port")
+	}
+	return nil
+}
+
+func (s *serverImpl) stop() {
+	for _, conn := range s.conns {
+		conn.unbind()
 	}
 }

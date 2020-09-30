@@ -1,87 +1,77 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net"
-	"strconv"
+	"sync"
 	"time"
 )
 
-func client(host string, startport uint, endport uint) {
-	failedTcpPorts := make([]uint, 0, 10)
-	failedUdpPorts := make([]uint, 0, 10)
-	var i uint
-	for i = startport; i < endport+1; i++ {
-		if err := checkTcp(host, i); err != nil {
-			failedTcpPorts = append(failedTcpPorts, i)
-		}
-		if err := checkUdp(host, i); err != nil {
-			failedUdpPorts = append(failedUdpPorts, i)
-		}
-	}
-	fmt.Printf("Blocked TCP ports: %v\n", failedTcpPorts)
-	fmt.Printf("Blocked UDP ports: %v\n", failedUdpPorts)
+type clientConfig struct {
+	host            string
+	portRangeStart  uint16
+	portRangeEnd    uint16
+	networks        []network
+	waitTime        time.Duration
+	parallelisation uint
 }
 
-func checkUdp(host string, port uint) error {
-	raddr, err := net.ResolveUDPAddr(UDP, host+":"+strconv.Itoa(int(port)))
-	if err != nil {
-		log.Error("Could not resolve host address", err)
-		return err
+type triple struct {
+	network network
+	host    string
+	port    int
+}
+
+func run(config *clientConfig) (map[network][]int, error) {
+	failedPorts := make(map[network][]int)
+	if config.portRangeEnd < config.portRangeStart {
+		return nil, errors.New(fmt.Sprintf("Port range is invalid."))
 	}
-	conn, err := net.DialUDP(UDP, nil, raddr)
-	if err != nil {
-		log.Warning("Could not open UDP connection", err)
-		return err
+	if config.networks == nil || len(config.networks) == 0 {
+		return nil, errors.New("no network types provided")
 	}
-	conn.SetDeadline(time.Now().Add(2000 * time.Millisecond))
-	_, err = conn.Write(PING)
-	if err != nil {
-		log.Warning("Could not write to UCP connection", err)
-		return err
+	channel := make(chan triple)
+	wg := sync.WaitGroup{}
+	for i := uint(0); i < config.parallelisation; i++ {
+		wg.Add(1)
+		go func() {
+			for triple := range channel {
+				isSuccessful := check(triple.network, triple.host, triple.port, config.waitTime)
+				if isSuccessful {
+					continue
+				}
+				failedPorts[triple.network] = append(failedPorts[triple.network], triple.port)
+			}
+			wg.Done()
+		}()
 	}
+	for _, network := range config.networks {
+		for port := config.portRangeStart; port <= config.portRangeEnd; port++ {
+			channel <- triple{
+				network: network,
+				host:    config.host,
+				port:    int(port),
+			}
+		}
+	}
+	close(channel)
+	wg.Wait()
+	return failedPorts, nil
+}
+
+func check(network network, host string, port int, waitTime time.Duration) bool {
+	conn, _ := net.Dial(string(network), fmt.Sprintf("%s:%d", host, port))
+	_ = conn.SetDeadline(time.Now().Add(waitTime))
+	_, _ = conn.Write(PING)
 	buf := make([]byte, len(PONG))
-	_, _, err = conn.ReadFromUDP(buf)
+	_, err := conn.Read(buf)
 	if err != nil {
-		log.Warning("Could not read from UDP connection", err)
-		return err
+		log.Info("Error while reading server response", err)
 	}
 	if string(buf) != string(PONG) {
-		log.Warning("Received unexpected data from UDP connection", err)
-		return err
+		log.Info("Incorrect server response", string(buf), len(buf))
+		return false
 	}
-	return nil
-}
-
-func checkTcp(host string, port uint) error {
-	conn, err := net.Dial(TCP, host+":"+strconv.Itoa(int(port)))
-	if err != nil {
-		log.Warning("Could not open TCP connection on port", port, err)
-		return err
-	}
-	bytes := make([]byte, len(PONG))
-	if err := conn.SetReadDeadline(time.Now().Add(2000 * time.Millisecond)); err != nil {
-		log.Warning("Failed to set TCP connection read deadline", err)
-	}
-	conn.SetDeadline(time.Now().Add(2000 * time.Millisecond))
-	_, err = conn.Write(PING)
-	if err != nil {
-		log.Warning("Could not write to TCP connection", err)
-		return err
-	}
-	_, err = conn.Read(bytes)
-	if err != nil {
-		log.Warning("Could not read from TCP connection", err)
-		return err
-	}
-	if string(bytes) != string(PONG) {
-		log.Warning("Received unexpected data from TCP connection")
-		return err
-	}
-	err = conn.Close()
-	if err != nil {
-		log.Warning("Could not close TCP connection", err)
-		return err
-	}
-	return nil
+	return true
 }
