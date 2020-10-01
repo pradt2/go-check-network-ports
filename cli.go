@@ -25,7 +25,7 @@ func main() {
 		portRangeEnd:    serverConfig.portRangeEnd,
 		networks:        serverConfig.networks,
 		waitTime:        2 * time.Second,
-		parallelisation: 1,
+		parallelisation: 4,
 	}
 	fails, _ := run(&clientConfig)
 	if len(fails) == 0 {

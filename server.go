@@ -42,7 +42,7 @@ type serverImpl struct {
 func newServer(config *serverConfig) serverX {
 	return &serverImpl{
 		config: config,
-		conns:  make([]networkConn, 0, 16),
+		conns:  make([]networkConn, 0),
 	}
 }
 

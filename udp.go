@@ -45,7 +45,7 @@ func (m *udpConn) RemoteAddr() net.Addr {
 }
 
 func (m *udpConn) SetDeadline(t time.Time) error {
-	return m.udpConn.SetDeadline(t)
+	return m.SetWriteDeadline(t)
 }
 
 func (m *udpConn) SetReadDeadline(t time.Time) error {

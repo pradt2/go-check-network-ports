@@ -15,10 +15,10 @@ type networkConn interface {
 	unbind()
 }
 
-func newConn(callback onNewConnCallback, bufferLength uint) networkConn {
+func newConn(callback onNewConnCallback, datagramSize uint) networkConn {
 	return &netConn{
 		callback:     callback,
-		bufferLength: bufferLength,
+		datagramSize: datagramSize,
 		isClosed:     false,
 		deadline:     2 * time.Second,
 		listener:     nil,
@@ -27,14 +27,14 @@ func newConn(callback onNewConnCallback, bufferLength uint) networkConn {
 
 type netConn struct {
 	callback     onNewConnCallback
-	bufferLength uint
+	datagramSize uint
 	isClosed     bool
 	deadline     time.Duration
 	listener     net.Listener
 }
 
 func (n *netConn) bind(network network, ip net.IP, port int) error {
-	listener, err := listen(network, ip, port, n.bufferLength)
+	listener, err := listen(network, ip, port, n.datagramSize)
 	if err != nil {
 		log.Warning("Failed to bind to TCP port.", port, err)
 		return err
@@ -58,13 +58,13 @@ func (n *netConn) bind(network network, ip net.IP, port int) error {
 			if err != nil {
 				log.Debug("Failed to set connection deadline.")
 			}
-			buf := make([]byte, n.bufferLength)
+			buf := make([]byte, n.datagramSize)
 			readBytesCount, err := conn.Read(buf)
 			if err != nil {
 				log.Debug("Error while reading data.", err)
 				continue
 			}
-			if readBytesCount != int(n.bufferLength) {
+			if readBytesCount != int(n.datagramSize) {
 				log.Debug("Received data of unexpected length.", readBytesCount)
 				continue
 			}
